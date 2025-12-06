@@ -3,151 +3,175 @@
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import pandas as pd
-from transformers import pipeline
+import google.generativeai as genai
 
-# Download VADER lexicon if not already present
+
+# ---------------------------------------------------------------------------
+# 1. VADER SENTIMENT INITIALIZATION
+# ---------------------------------------------------------------------------
+
+# Ensure VADER lexicon is available
 try:
-    nltk.data.find('sentiment/vader_lexicon.zip')
-except nltk.downloader.DownloadError:
-    nltk.download('vader_lexicon')
+    nltk.data.find("sentiment/vader_lexicon")
+except LookupError:
+    nltk.download("vader_lexicon")
 
-# Initialize the Sentiment Analyzer
 analyzer = SentimentIntensityAnalyzer()
 
-def analyze_sentiment(text):
-    """
-    Performs VADER sentiment analysis on the input text.
-    VADER returns scores for negative (neg), neutral (neu), positive (pos),
-    and a normalized, weighted composite score (compound).
-    
-    The compound score is the most useful for overall mood tracking.
-    """
-    
-    if not text:
-        return {'neg': 0.0, 'neu': 1.0, 'pos': 0.0, 'compound': 0.0}
-        
-    vs = analyzer.polarity_scores(text)
-    
-    # We will primarily use the compound score for the main mood metric
-    compound_score = vs['compound']
-    
-    return compound_score
-    
-# Placeholder for the future ML Stress Classifier
-def classify_stress_level(compound_score, mood_rating):
-    """
-    A rule-based classifier that considers both sentiment and mood rating.
-    Returns stress level as 'High', 'Medium', or 'Low'.
-    
-    Logic:
-    - High: Very negative sentiment OR very low mood rating
-    - Medium: Moderately negative sentiment OR low-to-moderate mood
-    - Low: Positive sentiment AND good mood rating
-    """
-    # High Stress: Strong negative indicators
-    if compound_score < -0.5 or mood_rating <= 3:
-        return "High"
-    
-    # Medium Stress: Moderate negative indicators
-    elif compound_score < 0 or mood_rating <= 5:
-        return "Medium"
-    
-    # Low Stress: Positive indicators
-    else:
-        return "Low"
 
+# ---------------------------------------------------------------------------
+# 2. SENTIMENT ANALYSIS
+# ---------------------------------------------------------------------------
+
+def analyze_sentiment(text: str) -> float:
+    """Returns the compound score (-1 to +1)."""
+    if not text:
+        return 0.0
+    score = analyzer.polarity_scores(text)
+    return score.get("compound", 0.0)
+
+
+# ---------------------------------------------------------------------------
+# 3. STRESS CLASSIFICATION
+# ---------------------------------------------------------------------------
+
+def classify_stress_level(compound_score: float, mood_rating: float) -> str:
+    """Simple rule-based stress classifier."""
+    if compound_score <= -0.5 or mood_rating <= 3:
+        return "High"
+    if compound_score < 0 or mood_rating <= 5:
+        return "Medium"
+    return "Low"
+
+
+# ---------------------------------------------------------------------------
+# 4. RULE-BASED SUGGESTIONS
+# ---------------------------------------------------------------------------
 
 def generate_suggestions(compound_score: float, stress_level: str, history_df: pd.DataFrame) -> list:
-    """
-    Generates tailored wellness suggestions based on current analysis and historical trends.
-    """
+    """Deterministic rule-based wellness suggestions."""
     suggestions = []
 
-    # --- 1. Current Entry Feedback ---
-    
+    # Current day feedback
     if stress_level == "High":
-        suggestions.append("🛑 **Immediate Focus: Stress Reduction.** Try taking 10 deep breaths, stepping away from your task for 5 minutes, or listening to a calming playlist.")
+        suggestions.append("🛑 **Immediate Focus:** Step away briefly and slow your breathing.")
     elif compound_score < 0 and stress_level == "Medium":
-        suggestions.append("⚖️ **Mood Check-in:** Your entry shows a negative tone. Consider reaching out to a friend or engaging in a hobby you enjoy to shift your focus.")
+        suggestions.append("⚖️ **Mood Check-in:** Reach out to someone or try a relaxing activity.")
     elif compound_score > 0.5:
-        suggestions.append("🎉 **Positive Reinforcement:** Keep doing what you're doing! Note down specifically why today felt good so you can replicate it.")
+        suggestions.append("🎉 **Positive Momentum:** Note what made today good.")
     else:
-        # Default suggestion for neutral/low-stress days
-        suggestions.append("🧘 **Maintain Balance:** Focus on consistency today. Ensure you are staying hydrated and getting sufficient rest.")
+        suggestions.append("🧘 **Maintain Balance:** Keep your routine steady today.")
 
-    # --- 2. Historical Trend Feedback ---
-    
+    # Historical trends
     if not history_df.empty and len(history_df) >= 7:
-        # Calculate recent average (last 7 days)
-        recent_df = history_df.tail(7)
-        recent_mood_avg = recent_df['Mood Rating (1-10)'].mean()
-        recent_vader_avg = recent_df['VADER Sentiment Score'].mean()
-        
-        overall_mood_avg = history_df['Mood Rating (1-10)'].mean()
-        
-        # Trend 1: Declining Mood
-        if recent_mood_avg < overall_mood_avg * 0.9: # If mood is 10% lower than overall average
-            suggestions.append("📉 **Trend Alert:** Your mood rating over the last week has been lower than your average. Prioritize sleep and outdoor time this week.")
-        
-        # Trend 2: Chronic Stress
-        high_stress_count = history_df[history_df['Stress Level'] == 'High'].shape[0]
-        if high_stress_count > len(history_df) * 0.3: # If more than 30% of days are classified as High stress
-            suggestions.append("🚨 **Long-Term Pattern:** A high percentage of your entries indicate high stress. Consider reviewing your schedule or seeking professional help if the pattern continues.")
-            
-    # Remove duplicates and return
-    return list(set(suggestions))
-generator = pipeline(
-    "text-generation", 
-    model="gpt2", # Example model, use something like 'distilgpt2' or a 7B LLM if possible
-    device=-1 # Use CPU; change to 0 for GPU
-)
+        history_df["Mood Rating (1-10)"] = pd.to_numeric(history_df["Mood Rating (1-10)"], errors="ignore")
+        recent = history_df.tail(7)
 
-def generate_suggestions_with_model(compound_score: float, stress_level: str, raw_text: str, history_df: pd.DataFrame) -> list:
+        recent_mood = recent["Mood Rating (1-10)"].mean()
+        overall_mood = history_df["Mood Rating (1-10)"].mean()
+
+        # Trend: dropping mood
+        if recent_mood < (overall_mood * 0.9):
+            suggestions.append("📉 **Recent Drop:** Your last week’s mood is lower than usual. Prioritize rest and daylight.")
+
+        # Trend: many high-stress days
+        high_days = (history_df["Stress Level"] == "High").sum()
+        if high_days > len(history_df) * 0.3:
+            suggestions.append("🚨 **Frequent Stress:** Your entries show ongoing stress. Consider light schedule adjustments.")
+
+    return list(dict.fromkeys(suggestions))  # Remove duplicates, keep order
+
+
+# ---------------------------------------------------------------------------
+# 5. GEMINI AI INITIALIZATION (unchanged as requested)
+# ---------------------------------------------------------------------------
+
+GOOGLE_API_KEY = ""
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel("gemini-pro")
+
+
+# ---------------------------------------------------------------------------
+# 6. GEMINI-POWERED SUGGESTIONS
+# ---------------------------------------------------------------------------
+
+def generate_suggestions_with_model(
+    compound_score: float,
+    stress_level: str,
+    raw_text: str,
+    history_df: pd.DataFrame,
+) -> list:
     """
-    Generates tailored wellness suggestions using a large language model prompt.
+    Returns Gemini-generated suggestions, guaranteed to always produce output.
     """
-    
-    # 1. Prepare Historical Context
-    historical_summary = "No long-term trend data available."
+
+    # --- Historical summary ---
     if not history_df.empty and len(history_df) >= 7:
-        recent_df = history_df.tail(7)
-        recent_mood_avg = recent_df['Mood Rating (1-10)'].mean()
-        high_stress_count = history_df[history_df['Stress Level'] == 'High'].shape[0]
-        
-        historical_summary = (
-            f"Over the last 7 days, the average mood rating was {recent_mood_avg:.1f}. "
-            f"Overall, {high_stress_count} days were classified as HIGH stress. "
+        recent = history_df.tail(7)
+        recent_mood = pd.to_numeric(
+            recent["Mood Rating (1-10)"], errors="coerce"
+        ).mean()
+        high_stress_count = (history_df["Stress Level"] == "High").sum()
+
+        history_summary = (
+            f"Last 7-day average mood: {recent_mood:.1f}. "
+            f"High-stress days recorded: {high_stress_count}."
         )
+    else:
+        history_summary = "No long-term trend data available."
 
-    # 2. Construct the Prompt (The key to personalized output)
+    # --- Prompt ---
     prompt = f"""
-    You are an empathetic, non-judgmental wellness assistant. Your task is to provide 
-    1-3 concise, actionable suggestions based on the user's input and history.
-    
-    [ANALYSIS]
-    Current Entry Text: "{raw_text}"
-    Sentiment Score (VADER): {compound_score:.2f}
-    Calculated Stress Level: {stress_level}
-    Historical Summary: {historical_summary}
-    
-    
-    
-    Generate the advice in a list format, starting with an emoji for each point.
-    """
+You are a supportive wellness assistant. Provide only 2–3 concise, actionable suggestions.
 
-    # 3. Generate Advice from the Model
+[DATA]
+User Entry: "{raw_text}"
+Sentiment Score: {compound_score:.2f}
+Stress Level: {stress_level}
+Historical Summary: {history_summary}
+
+[INSTRUCTIONS]
+- Return 2–3 bullet points.
+- Each line must contain: emoji + bold title + colon + short action.
+- No extra explanations or numbering.
+- No repeated ideas.
+
+Example:
+🛑 **Stress Relief:** Take 10 slow breaths.
+🤝 **Connection:** Reach out to someone close.
+🧘 **Recovery:** Prioritize sleep tonight.
+
+Now generate the suggestions:
+"""
+
     try:
-        response = generator(prompt, max_length=512, num_return_sequences=1, truncation=True)
-        # The model's output needs cleaning to extract the list.
-        # This is a simplification; a dedicated text model requires careful parsing.
-        advice_text = response[0]['generated_text'].replace(prompt, '').strip()
-        
-        # Simple split on newlines for suggestions (requires the model to follow instructions!)
-        suggestions = [line for line in advice_text.split('\n') if line.strip() and len(line) > 5]
-        
-    except Exception as e:
-        # Fallback to the old rule-based system if the model fails
-        print(f"Model generation failed: {e}. Falling back to rule-based system.")
-        suggestions = generate_suggestions_rule_based(compound_score, stress_level, history_df) # You'd rename your original function
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        raw_lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-    return suggestions
+        suggestions = []
+
+        # AI Output Extraction:
+        # Accept any line beginning with an emoji (or non-alphanumeric symbol)
+        for line in raw_lines:
+            stripped = line.lstrip()
+            if stripped and not stripped[0].isalnum():  # Accept emojis & symbols
+                suggestions.append(f"• {stripped}")
+
+        # If suggestions list is empty, fall back to ANY meaningful line
+        if not suggestions:
+            for ln in raw_lines:
+                if ln.strip():
+                    suggestions.append(f"• {ln.strip()}")
+
+        # If still empty, use rule-based fallback
+        if not suggestions:
+            fallback = generate_suggestions(compound_score, stress_level, history_df)
+            return [f"• {s}" for s in fallback]
+
+        return suggestions
+
+    except Exception:
+        # Hard fallback: rule-based
+        fallback = generate_suggestions(compound_score, stress_level, history_df)
+        return [f"• {s}" for s in fallback]
