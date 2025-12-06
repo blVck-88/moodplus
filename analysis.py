@@ -86,7 +86,7 @@ def generate_suggestions(compound_score: float, stress_level: str, history_df: p
 # 5. GEMINI AI INITIALIZATION (unchanged as requested)
 # ---------------------------------------------------------------------------
 
-GOOGLE_API_KEY = ""
+GOOGLE_API_KEY = "AIzaSyAS8c21XgXBXw_65ouRIXgRRbrKZsROldU"
 genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel("gemini-pro")
 
